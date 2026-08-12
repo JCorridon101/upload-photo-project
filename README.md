@@ -35,20 +35,20 @@ The phone is a thin client that authenticates with an API key and POSTs photos a
 
 ### 3.1 Backend API (runs on the personal computer)
 
-| Concern | Library / Framework | Why |
-|---|---|---|
-| Web framework | **FastAPI** | Async, native file-upload support, automatic OpenAPI docs — easy to test from the phone or `curl` while building the client. |
-| ASGI server | **uvicorn** | Standard partner for FastAPI; simple to run as a long-lived process. |
-| Data validation | **Pydantic** | Ships with FastAPI; validates upload metadata (device, timestamp, GPS, etc.). |
-| Database ORM | **SQLModel** (or SQLAlchemy directly) | Pydantic + SQLAlchemy in one; stores photo metadata in SQLite. |
-| Database | **SQLite** | Zero-config, file-based — fits a single-machine personal project. |
-| Image handling | **Pillow** | Thumbnail generation, format conversion, EXIF reading. |
-| iPhone photo support | **pillow-heif** | iPhones shoot HEIC/HEIF by default; Pillow doesn't decode it without this plugin. |
-| File-type sniffing | **python-magic** | Verify uploaded bytes are actually images before trusting the extension. |
-| Duplicate detection | **imagehash** | Perceptual hashing to skip re-uploading a photo already on disk. |
-| Background work | **FastAPI `BackgroundTasks`** (start simple) → **Celery** or **RQ** (if a real queue is needed later) | Thumbnail generation / hashing shouldn't block the upload response. |
-| Config / secrets | **pydantic-settings** + `.env` | API key and storage path live outside source control. |
-| Testing | **pytest** + **httpx** (`AsyncClient`) | Exercise API endpoints without a real phone. |
+| Concern | What it is / why the project needs it | Library / Framework | Why this pick |
+|---|---|---|---|
+| Web framework | The core server that listens for HTTP requests from the phone and turns them into Python function calls. Every other backend piece plugs into this. | **FastAPI** | Async, native file-upload support, automatic OpenAPI docs — easy to test from the phone or `curl` while building the client. |
+| ASGI server | FastAPI defines the app but doesn't run it — something has to actually open a socket, accept connections, and hand requests to the app. | **uvicorn** | Standard partner for FastAPI; simple to run as a long-lived process. |
+| Data validation | Every upload arrives as untrusted bytes/text from the phone; something must check the shape of the metadata (timestamp, device name, etc.) before the app trusts it. | **Pydantic** | Ships with FastAPI; validates upload metadata (device, timestamp, GPS, etc.) with almost no boilerplate. |
+| Database ORM | The app needs to read/write photo metadata as Python objects instead of hand-writing SQL for every query. | **SQLModel** (or SQLAlchemy directly) | Combines Pydantic + SQLAlchemy in one model definition; fits naturally with FastAPI's request/response models. |
+| Database | Metadata (filenames, timestamps, hashes) needs to persist across server restarts and be queryable, unlike files on disk alone. | **SQLite** | Zero-config, file-based — fits a single-machine personal project; no separate DB server to run. |
+| Image handling | Uploaded photos need thumbnails for quick browsing, and EXIF data (capture time, orientation) needs to be read out of the file. | **Pillow** | The standard Python imaging library; thumbnail generation, format conversion, EXIF reading all in one package. |
+| iPhone photo support | Most of what actually lands in this system will be iPhone photos, and iPhones shoot HEIC/HEIF by default. | **pillow-heif** | Pillow can't decode HEIC/HEIF out of the box; this plugin adds that codec so iPhone photos don't fail to process. |
+| File-type sniffing | A client could send anything with a `.jpg` extension; the server shouldn't trust the filename when deciding what a file actually is. | **python-magic** | Verifies uploaded bytes are actually image data (via file signature/magic bytes) before storing or processing them. |
+| Duplicate detection | Phones re-sync and retry uploads; without dedup, the same photo can pile up multiple times on disk. | **imagehash** | Perceptual hashing detects "visually the same photo" even if the file bytes differ slightly, so re-uploads can be skipped. |
+| Background work | Thumbnailing and hashing take real time; doing them inline would make the phone wait longer than necessary for an upload to "finish." | **FastAPI `BackgroundTasks`** (start simple) → **Celery** or **RQ** (if a real queue is needed later) | Lets the API respond "upload received" immediately while the slower processing happens after the response is sent. |
+| Config / secrets | The API key and photo storage path shouldn't be hard-coded or committed to git, since this repo will be pushed to GitHub. | **pydantic-settings** + `.env` | Loads settings from environment variables/`.env` with validation, keeping secrets out of source control. |
+| Testing | Bugs in the upload path are much cheaper to catch by hitting the API directly than by testing through an actual phone every time. | **pytest** + **httpx** (`AsyncClient`) | Lets you exercise every endpoint (including file uploads) from a script, without a real phone in the loop. |
 
 ### 3.2 Mobile Client
 
@@ -56,37 +56,41 @@ Two Python-first paths, in order of recommendation:
 
 **Option A — Python web app installed to the home screen (recommended to start).**
 
-| Concern | Library / Framework | Why |
-|---|---|---|
-| UI framework | **Reflex** (formerly Pynecone) | Write the entire front end in Python; it compiles to a real web app. Installable to a phone's home screen as a PWA — no JavaScript required from you. |
-| Camera/file access | Browser `<input type="file" capture>` (Reflex wraps this) | Standard way for a mobile browser to open the camera or photo picker. |
-| HTTP calls to API | Reflex's built-in state/event handlers, or `httpx` under the hood | Same language, same repo, no separate client codebase. |
+| Concern | What it is / why the project needs it | Library / Framework | Why this pick |
+|---|---|---|---|
+| UI framework | Something has to render a screen the user can tap "choose photo" / "upload" on — the actual visual app the phone shows. | **Reflex** (formerly Pynecone) | Write the entire front end in Python; it compiles to a real web app. Installable to a phone's home screen as a PWA — no JavaScript required from you. |
+| Camera/file access | The app needs a way to pull bytes off the phone's camera roll or camera into the upload flow. | Browser `<input type="file" capture>` (Reflex wraps this) | The standard, cross-platform way for a mobile browser to open the camera or photo picker — no native SDK needed. |
+| HTTP calls to API | Once a photo is selected, something has to actually send it over the network to the FastAPI server. | Reflex's built-in state/event handlers, or `httpx` under the hood | Same language, same repo, no separate client codebase to maintain. |
 
 **Option B — Native-feeling app, still 100% Python.**
 
-| Concern | Library / Framework | Why |
-|---|---|---|
-| UI framework | **Kivy** + **KivyMD** | Pure Python UI toolkit with Material Design widgets; runs on Android and iOS. |
-| Packaging | **Buildozer** (Android) / **briefcase** (iOS, via BeeWare) | Turns the Kivy app into an installable APK/IPA. |
-| HTTP calls | **httpx** or **requests** | Upload photos to the FastAPI server. |
+| Concern | What it is / why the project needs it | Library / Framework | Why this pick |
+|---|---|---|---|
+| UI framework | The visual layer of a real installable app, as opposed to a browser page. | **Kivy** + **KivyMD** | Pure Python UI toolkit with Material Design widgets; runs on Android and iOS from one codebase. |
+| Packaging | A Kivy app is just Python source until something turns it into a file a phone can actually install. | **Buildozer** (Android) / **briefcase** (iOS, via BeeWare) | Turns the Kivy app into an installable APK/IPA. |
+| HTTP calls | Same need as Option A — get the selected photo's bytes to the server. | **httpx** or **requests** | Upload photos to the FastAPI server; no browser to lean on here, so the app makes the HTTP call itself. |
 
 Recommendation: start with **Option A (Reflex)** — it ships faster, updates instantly (just refresh the page, no app rebuild/reinstall), and keeps 100% of the code in Python. Revisit Kivy/BeeWare only if home-screen-web-app limitations (e.g. background upload, native camera controls) become a real blocker.
 
 ### 3.3 Networking / Remote Access
 
-| Scenario | Approach |
-|---|---|
-| Phone on the same home Wi-Fi | Hit the computer's LAN IP directly, e.g. `http://192.168.1.50:8000`. Simplest option, no extra tooling. |
-| Upload from outside the house | **Tailscale** — private mesh VPN, free for personal use, no port forwarding, works from Python without extra client code since it's just networking. |
-| Quick temporary testing only | **ngrok** or **Cloudflare Tunnel** — fine for a demo, not recommended as the long-term access method. |
+The phone and the computer need a way to actually reach each other over a network — this isn't optional, since without it the API only works if the phone happens to be sitting on the same Wi-Fi.
+
+| Scenario | Why it matters | Approach |
+|---|---|---|
+| Phone on the same home Wi-Fi | The baseline case — both devices are already on one local network, so no extra infrastructure is needed. | Hit the computer's LAN IP directly, e.g. `http://192.168.1.50:8000`. Simplest option, no extra tooling. |
+| Upload from outside the house | The whole point of a "phone → home computer" app is to also work when out and about, not just at home. | **Tailscale** — private mesh VPN, free for personal use, no port forwarding, no exposed public port. |
+| Quick temporary testing only | Occasionally useful to show/test the app from a device not on Tailscale yet, without committing to a permanent access method. | **ngrok** or **Cloudflare Tunnel** — fine for a demo, not recommended as the long-term access method (adds a third party in the middle of every request). |
 
 ### 3.4 Deployment (Windows, since that's the host machine)
 
-| Concern | Tool |
-|---|---|
-| Keep the API running in the background | **NSSM** (Non-Sucking Service Manager) to run `uvicorn` as a Windows service, or Task Scheduler with "run at logon." |
-| Reproducible environment | **Docker Desktop** (optional) — containerize the FastAPI app so the host machine's Python install doesn't drift. |
-| TLS | **Caddy** as a reverse proxy in front of uvicorn if HTTPS is needed beyond the local network (Tailscale already encrypts traffic, so this may be unnecessary). |
+The API needs to survive the computer being used normally — logins, reboots, sleep — without the user having to manually open a terminal and start it every time.
+
+| Concern | Why it's necessary | Tool |
+|---|---|---|
+| Keep the API running in the background | If the server only runs while a terminal window is open, a photo upload fails any time that window isn't up. | **NSSM** (Non-Sucking Service Manager) to run `uvicorn` as a Windows service, or Task Scheduler with "run at logon." |
+| Reproducible environment | Python/library versions on the host machine can drift over time, causing "works on my machine" breakage. | **Docker Desktop** (optional) — containerizes the FastAPI app so its dependencies are pinned and isolated from the host Python install. |
+| TLS | Traffic should be encrypted, especially if the API is ever reachable outside the local network. | **Caddy** as a reverse proxy in front of uvicorn if HTTPS is needed beyond the local network (Tailscale already encrypts traffic, so this may be unnecessary). |
 
 ## 4. Project Structure (proposed)
 
